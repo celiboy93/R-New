@@ -11,7 +11,7 @@ const ACCOUNT_ID = Deno.env.get("R2_ACCOUNT_ID") || "";
 const ACCESS_KEY_ID = Deno.env.get("R2_ACCESS_KEY_ID") || "";
 const SECRET_ACCESS_KEY = Deno.env.get("R2_SECRET_ACCESS_KEY") || "";
 const BUCKET_NAME = Deno.env.get("R2_BUCKET_NAME") || "";
-// Custom Domain မရှိရင် VPN လိုပါမယ် (ISP Block ကြောင့်)
+// PUBLIC_DOMAIN မလိုတော့ပါ (cloudflarestorage.com အတိုင်းထွက်ချင်လို့ပါ)
 const PUBLIC_DOMAIN = Deno.env.get("R2_PUBLIC_DOMAIN") || ""; 
 
 const s3 = new S3Client({
@@ -23,6 +23,7 @@ const s3 = new S3Client({
   },
 });
 
+// --- Frontend UI ---
 app.get("/", (c) => {
   const html = `
     <!DOCTYPE html>
@@ -37,7 +38,7 @@ app.get("/", (c) => {
     </head>
     <body class="p-4 md:p-8 max-w-4xl mx-auto">
       <h1 class="text-3xl font-extrabold mb-6 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
-        <i class="fa-solid fa-cloud-arrow-up"></i> Stream & Download Manager
+        <i class="fa-solid fa-cloud-arrow-up"></i> R2 Manager
       </h1>
       
       <div class="bg-slate-800 p-6 rounded-xl shadow-lg border border-slate-700 mb-8">
@@ -74,7 +75,7 @@ app.get("/", (c) => {
           alert('Copied! ✅');
         }
         async function deleteHistory(ts) {
-          if(!confirm("Remove?")) return;
+          if(!confirm("Delete?")) return;
           await fetch('/api/history/' + ts, { method: 'DELETE' });
           loadHistory();
         }
@@ -86,9 +87,13 @@ app.get("/", (c) => {
           if(data.length === 0) { list.innerHTML = '<div class="text-center text-slate-500 py-10">Empty.</div>'; return; }
 
           data.forEach(item => {
-            // Bandwidth Saving Download Link
+            // DL Link က Deno API ကို ခေါ်ပြီး အဲ့ဒီကနေမှ Signed URL ကို Redirect လုပ်ပေးမယ်
             const host = window.location.origin;
             const downloadLink = \`\${host}/api/force-download?url=\${encodeURIComponent(item.url)}&name=\${encodeURIComponent(item.filename)}\`;
+
+            // Stream Link အတွက် Cloudflare Signed URL (12 Hours) ကို တိုက်ရိုက်ထုတ်ပေးချင်ရင် API တောင်စရာလိုမယ်
+            // လောလောဆယ် item.url က Public domain link ဖြစ်နေနိုင်လို့
+            // ဒီနေရာမှာ ရိုးရိုးပြထားပြီး DL button ကတော့ ပုံစံအသစ်အတိုင်းအလုပ်လုပ်မယ်
 
             list.innerHTML += \`
               <div class="p-4 flex flex-col sm:flex-row items-center justify-between gap-4">
@@ -97,8 +102,12 @@ app.get("/", (c) => {
                   <p class="text-xs text-slate-500">\${new Date(item.ts).toLocaleString()}</p>
                 </div>
                 <div class="flex gap-2">
+                   <!-- ဒီ Stream ခလုတ်က ရိုးရိုး Link ပါ (Player အတွက်) -->
                   <button onclick="copyText('\${item.url}')" class="bg-slate-700 text-slate-200 text-xs px-3 py-2 rounded">Stream</button>
+                  
+                  <!-- ဒီ DL Link က မိတ်ဆွေလိုချင်တဲ့ cloudflarestorage link အရှည်ကြီးထွက်မယ့်ဟာပါ -->
                   <button onclick="copyText('\${downloadLink}')" class="bg-green-700 text-white text-xs px-3 py-2 rounded">DL Link</button>
+                  
                   <button onclick="deleteHistory(\${item.ts})" class="bg-red-900 text-red-200 text-xs px-3 py-2 rounded"><i class="fa-solid fa-trash"></i></button>
                 </div>
               </div>
@@ -162,7 +171,11 @@ async function runUploadTask(jobId, url, filename) {
       params: { Bucket: BUCKET_NAME, Key: filename, Body: res.body?.pipeThrough(stream), ContentType: "video/mp4" },
     });
     await upload.done();
-    const r2Url = `${PUBLIC_DOMAIN}/${filename}`;
+    
+    // Upload ပြီးရင်တော့ Public Domain or R2.dev Link အတိုင်းမှတ်ထားမယ် (ကြည့်ဖို့အတွက်)
+    // DL Link က သက်သက် Generate လုပ်မှာမို့လို့
+    const r2Url = PUBLIC_DOMAIN ? `${PUBLIC_DOMAIN}/${filename}` : `https://${ACCOUNT_ID}.r2.cloudflarestorage.com/${BUCKET_NAME}/${filename}`;
+    
     const ts = Date.now();
     await kv.set(["jobs", jobId], { status: "completed", url: r2Url });
     await kv.set(["history", ts], { filename, url: r2Url, ts });
@@ -176,7 +189,7 @@ app.get("/api/history", async (c) => {
 });
 app.delete("/api/history/:ts", async (c) => { await kv.delete(["history", Number(c.req.param("ts"))]); return c.json({ok:true}); });
 
-// --- THE FIX (Bandwidth Saver + Auto Download) ---
+// --- THE MAGIC PART (Generating the Exact Cloudflare Link) ---
 app.get("/api/force-download", async (c) => {
   const fileUrl = c.req.query("url");
   const fileName = c.req.query("name") || "video.mp4";
@@ -187,25 +200,19 @@ app.get("/api/force-download", async (c) => {
   const command = new GetObjectCommand({
     Bucket: BUCKET_NAME,
     Key: objectKey,
-    // (၁) Browser ကို ဒေါင်းပါလို့ ပြောမယ်
+    // (၁) Attachment လုပ်လိုက်တာနဲ့ Browser က Auto Download ဆွဲပါတယ်
     ResponseContentDisposition: `attachment; filename="${fileName}"`,
-    // (၂) Video မဟုတ်ပါဘူး၊ Binary ပါလို့ လိမ်ပြောမယ် (ဒါမှ Player မပွင့်မှာ)
-    ResponseContentType: "application/octet-stream",
+    // (၂) နမူနာ Link ထဲကအတိုင်း Cache Control ထည့်ပေးထားပါတယ်
+    ResponseCacheControl: 'public, max-age=31536000',
   });
 
-  let signedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
+  // (၃) Signed URL ထုတ်ပေးပါမယ် (၁၀၈၀၀ စက္ကန့် = ၃ နာရီ)
+  const signedUrl = await getSignedUrl(s3, command, { expiresIn: 10800 });
 
-  if (PUBLIC_DOMAIN) {
-    try {
-      const u = new URL(signedUrl);
-      const d = new URL(PUBLIC_DOMAIN);
-      u.hostname = d.hostname;
-      u.protocol = d.protocol;
-      signedUrl = u.toString();
-    } catch (e) {}
-  }
+  // Custom Domain အစားထိုးတာကို ဖြုတ်ထားတဲ့အတွက်
+  // Result က https://<account>.r2.cloudflarestorage.com/...myvideo.mp4?... ဆိုပြီးထွက်လာပါမယ်
+  // မိတ်ဆွေလိုချင်တဲ့ ပုံစံအတိုင်းပါပဲ
 
-  // Deno က လမ်းကြောင်းလွှဲပေးလိုက်တာမို့ Bandwidth မကုန်ပါ
   return c.redirect(signedUrl);
 });
 
