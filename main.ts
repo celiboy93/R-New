@@ -6,12 +6,13 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 const app = new Hono();
 const kv = await Deno.openKv();
 
-// --- Configuration ---
+// --- Configuration (Environment Variables) ---
 const ACCOUNT_ID = Deno.env.get("R2_ACCOUNT_ID") || "";
 const ACCESS_KEY_ID = Deno.env.get("R2_ACCESS_KEY_ID") || "";
 const SECRET_ACCESS_KEY = Deno.env.get("R2_SECRET_ACCESS_KEY") || "";
 const BUCKET_NAME = Deno.env.get("R2_BUCKET_NAME") || "";
-// Custom Domain ရှိရင်ထည့်ပါ၊ မရှိရင် R2.dev link ထွက်ပါမယ်
+// အရေးကြီး: Custom Domain ရှိရင်ထည့်ပါ (ဥပမာ: https://dl.mymovie.com)
+// Custom Domain မရှိရင် VPN လိုနိုင်ပါတယ်
 const PUBLIC_DOMAIN = Deno.env.get("R2_PUBLIC_DOMAIN") || ""; 
 
 const s3 = new S3Client({
@@ -36,7 +37,7 @@ app.get("/", (c) => {
       <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
       <style>
         body { font-family: sans-serif; background-color: #0f172a; color: #e2e8f0; }
-        /* Scrollbar custom style */
+        /* Custom Scrollbar */
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #1e293b; }
         ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
@@ -86,8 +87,8 @@ app.get("/", (c) => {
         <button onclick="loadHistory()" class="text-sm text-blue-400 hover:text-white transition"><i class="fa-solid fa-rotate"></i> Refresh</button>
       </div>
       
-      <!-- Scrollable History Container (Max height set) -->
-      <div id="historyContainer" class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-inner max-h-[600px] overflow-y-auto">
+      <!-- Scrollable History Container (Height fixed to 600px) -->
+      <div id="historyContainer" class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-inner h-[600px] overflow-y-auto relative">
         <div id="historyList" class="divide-y divide-slate-700">
           <div class="text-center text-slate-500 py-10">Loading history...</div>
         </div>
@@ -97,16 +98,15 @@ app.get("/", (c) => {
         // Copy function
         function copyText(text) {
           navigator.clipboard.writeText(text);
-          // Simple Toast notification
           const toast = document.createElement('div');
           toast.className = 'fixed bottom-5 right-5 bg-green-600 text-white px-4 py-2 rounded shadow-lg text-sm z-50';
-          toast.innerText = 'Copied to clipboard! ✅';
+          toast.innerText = 'Copied! ✅';
           document.body.appendChild(toast);
           setTimeout(() => toast.remove(), 2000);
         }
 
         async function deleteHistory(ts) {
-          if(!confirm("Are you sure you want to remove this from history? (File stays on R2)")) return;
+          if(!confirm("Delete from history list?")) return;
           await fetch('/api/history/' + ts, { method: 'DELETE' });
           loadHistory();
         }
@@ -117,10 +117,10 @@ app.get("/", (c) => {
           const list = document.getElementById('historyList');
           list.innerHTML = '';
           
-          if(data.length === 0) { list.innerHTML = '<div class="text-center text-slate-500 py-8">No files found.</div>'; return; }
+          if(data.length === 0) { list.innerHTML = '<div class="text-center text-slate-500 py-10">No files found.</div>'; return; }
 
           data.forEach(item => {
-            // This is the download link wrapper
+            // Generate Download Link (Points to Deno API)
             const host = window.location.origin;
             const downloadLink = \`\${host}/api/force-download?url=\${encodeURIComponent(item.url)}&name=\${encodeURIComponent(item.filename)}\`;
 
@@ -134,18 +134,18 @@ app.get("/", (c) => {
 
                 <div class="flex flex-wrap gap-2 w-full sm:w-auto">
                   
-                  <!-- Stream Link Copy -->
+                  <!-- Copy Stream Link -->
                   <button onclick="copyText('\${item.url}')" class="bg-slate-700 hover:bg-blue-600 text-slate-200 text-xs px-3 py-2 rounded border border-slate-600 flex items-center gap-2 transition">
                     <i class="fa-regular fa-copy"></i> Stream
                   </button>
 
-                  <!-- Download Link Copy -->
+                  <!-- Copy Download Link -->
                   <button onclick="copyText('\${downloadLink}')" class="bg-slate-700 hover:bg-green-600 text-slate-200 text-xs px-3 py-2 rounded border border-slate-600 flex items-center gap-2 transition">
                     <i class="fa-solid fa-download"></i> DL Link
                   </button>
                   
-                  <!-- Delete History Button -->
-                  <button onclick="deleteHistory(\${item.ts})" class="bg-slate-700 hover:bg-red-600 text-slate-400 hover:text-white text-xs px-3 py-2 rounded border border-slate-600 transition ml-auto sm:ml-0" title="Remove from list">
+                  <!-- Delete Button -->
+                  <button onclick="deleteHistory(\${item.ts})" class="bg-slate-700 hover:bg-red-600 text-slate-400 hover:text-white text-xs px-3 py-2 rounded border border-slate-600 transition ml-auto sm:ml-0" title="Remove">
                     <i class="fa-solid fa-trash"></i>
                   </button>
                 </div>
@@ -157,7 +157,7 @@ app.get("/", (c) => {
 
         async function startUpload() {
           const url = document.getElementById('urlInput').value;
-          const customName = document.getElementById('nameInput').value; // Get custom name
+          const customName = document.getElementById('nameInput').value;
 
           if(!url) return alert("Link is required!");
 
@@ -175,7 +175,7 @@ app.get("/", (c) => {
             const startRes = await fetch('/api/upload', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({ url, customName }) // Send custom name
+              body: JSON.stringify({ url, customName })
             });
             const { jobId } = await startRes.json();
 
@@ -196,7 +196,6 @@ app.get("/", (c) => {
                 setTimeout(() => {
                    statusArea.classList.add('hidden');
                    loadHistory();
-                   // Clear inputs
                    document.getElementById('urlInput').value = '';
                    document.getElementById('nameInput').value = '';
                 }, 1000);
@@ -254,7 +253,6 @@ async function runUploadTask(jobId: string, url: string, filename: string) {
     const transformStream = new TransformStream({
       transform(chunk, controller) {
         loaded += chunk.length;
-        // Update status periodically
         if (loaded % (1024 * 1024 * 2) < chunk.length || loaded === totalSize) {
              kv.set(["jobs", jobId], { status: "processing", loaded, total: totalSize });
         }
@@ -285,7 +283,7 @@ async function runUploadTask(jobId: string, url: string, filename: string) {
   }
 }
 
-// --- API: Status, History List, Delete History ---
+// --- API: Status, History List, Delete ---
 app.get("/api/status/:id", async (c) => {
   const result = await kv.get(["jobs", c.req.param("id")]);
   return c.json(result.value || {});
@@ -298,15 +296,13 @@ app.get("/api/history", async (c) => {
   return c.json(history);
 });
 
-// New Endpoint: Delete History Item (KV only)
 app.delete("/api/history/:ts", async (c) => {
   const ts = Number(c.req.param("ts"));
   await kv.delete(["history", ts]);
   return c.json({ success: true });
 });
 
-// --- API: Smart Download (Bandwidth Saver) ---
-// Redirects directly to R2 Signed URL (VPN bypass via custom domain)
+// --- API: Smart Download (Bandwidth Saver & VPN Bypass) ---
 app.get("/api/force-download", async (c) => {
   const fileUrl = c.req.query("url");
   const fileName = c.req.query("name") || "video.mp4";
@@ -316,6 +312,7 @@ app.get("/api/force-download", async (c) => {
   // Extract Key from URL
   const objectKey = fileUrl.split('/').pop();
 
+  // Create Command to force download
   const command = new GetObjectCommand({
     Bucket: BUCKET_NAME,
     Key: objectKey,
@@ -325,15 +322,25 @@ app.get("/api/force-download", async (c) => {
   // Generate Signed URL (valid for 1 hour)
   let signedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
 
-  // Replace with Custom Domain if available
+  // Domain Replacement for VPN Bypass
   if (PUBLIC_DOMAIN) {
     try {
-      const myDomain = new URL(PUBLIC_DOMAIN).origin; 
-      const urlObj = new URL(signedUrl);
-      signedUrl = `${myDomain}${urlObj.pathname}${urlObj.search}`;
-    } catch (e) { console.error(e); }
+      // Create objects to manipulate URL
+      const customDomainObj = new URL(PUBLIC_DOMAIN);
+      const originalUrlObj = new URL(signedUrl);
+      
+      // Swap the hostname (e.g., xxx.r2.cloudflarestorage.com -> dl.mymovie.com)
+      originalUrlObj.hostname = customDomainObj.hostname;
+      originalUrlObj.protocol = customDomainObj.protocol;
+
+      // Update signedUrl with new domain
+      signedUrl = originalUrlObj.toString();
+    } catch (e) {
+      console.error("Domain replacement failed:", e);
+    }
   }
 
+  // Redirect user to the new Signed URL
   return c.redirect(signedUrl);
 });
 
