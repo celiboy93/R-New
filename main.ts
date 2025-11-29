@@ -1,6 +1,7 @@
 import { Hono } from "hono";
-import { S3Client } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const app = new Hono();
 const kv = await Deno.openKv();
@@ -10,6 +11,7 @@ const ACCOUNT_ID = Deno.env.get("R2_ACCOUNT_ID") || "";
 const ACCESS_KEY_ID = Deno.env.get("R2_ACCESS_KEY_ID") || "";
 const SECRET_ACCESS_KEY = Deno.env.get("R2_SECRET_ACCESS_KEY") || "";
 const BUCKET_NAME = Deno.env.get("R2_BUCKET_NAME") || "";
+// Custom Domain ရှိရင်ထည့်ပါ၊ မရှိရင် R2.dev link ထွက်ပါမယ်
 const PUBLIC_DOMAIN = Deno.env.get("R2_PUBLIC_DOMAIN") || ""; 
 
 const s3 = new S3Client({
@@ -29,113 +31,135 @@ app.get("/", (c) => {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Deno Pro Uploader</title>
+      <title>Deno Uploader Pro</title>
       <script src="https://cdn.tailwindcss.com"></script>
       <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
       <style>
         body { font-family: sans-serif; background-color: #0f172a; color: #e2e8f0; }
-        .btn { transition: all 0.2s; }
-        .btn:active { transform: scale(0.95); }
+        /* Scrollbar custom style */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
       </style>
     </head>
-    <body class="p-4 md:p-8 max-w-5xl mx-auto">
-      <h1 class="text-3xl font-extrabold mb-8 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
-        <i class="fa-solid fa-cloud-arrow-up"></i> Deno Stream & Downloader
+    <body class="p-4 md:p-8 max-w-4xl mx-auto">
+      <h1 class="text-3xl font-extrabold mb-6 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
+        <i class="fa-solid fa-cloud-arrow-up"></i> Stream & Download Manager
       </h1>
       
       <!-- Upload Box -->
-      <div class="bg-slate-800 p-6 rounded-xl shadow-xl border border-slate-700 mb-10">
-        <label class="block mb-3 text-sm font-bold text-slate-300">Direct Video Link (MP4)</label>
-        <div class="flex flex-col md:flex-row gap-3">
-          <input type="text" id="urlInput" placeholder="https://site.com/video.mp4" class="flex-1 p-3 rounded-lg bg-slate-900 border border-slate-600 focus:outline-none focus:border-blue-500 text-white">
-          <button onclick="startUpload()" class="btn bg-blue-600 hover:bg-blue-700 px-8 py-3 rounded-lg font-bold text-white shadow-lg">
-            <i class="fa-solid fa-upload"></i> Upload
-          </button>
+      <div class="bg-slate-800 p-6 rounded-xl shadow-lg border border-slate-700 mb-8">
+        
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <!-- URL Input -->
+          <div class="md:col-span-2">
+            <label class="block mb-1 text-xs font-bold text-slate-400">Video Link</label>
+            <input type="text" id="urlInput" placeholder="https://site.com/video.mp4" class="w-full p-3 rounded bg-slate-900 border border-slate-600 focus:border-blue-500 text-white text-sm">
+          </div>
+          <!-- Rename Input -->
+          <div>
+            <label class="block mb-1 text-xs font-bold text-slate-400">Filename (Optional)</label>
+            <input type="text" id="nameInput" placeholder="My_Movie_Name" class="w-full p-3 rounded bg-slate-900 border border-slate-600 focus:border-purple-500 text-white text-sm">
+          </div>
         </div>
+
+        <button onclick="startUpload()" class="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white font-bold py-3 rounded shadow-lg transition transform active:scale-95">
+          <i class="fa-solid fa-rocket"></i> Upload Now
+        </button>
         
         <!-- Progress Bar -->
-        <div id="statusArea" class="mt-6 hidden transition-all">
+        <div id="statusArea" class="mt-4 hidden">
           <div class="flex justify-between text-xs text-slate-400 mb-1">
             <span id="statusText">Starting...</span>
             <span id="percentText">0%</span>
           </div>
-          <div class="w-full bg-slate-900 rounded-full h-3 overflow-hidden">
-            <div id="progressBar" class="bg-gradient-to-r from-blue-500 to-purple-500 h-3 rounded-full transition-all duration-300" style="width: 0%"></div>
+          <div class="w-full bg-slate-900 rounded-full h-2">
+            <div id="progressBar" class="bg-blue-500 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
           </div>
         </div>
       </div>
 
       <!-- History Section -->
       <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-bold text-slate-200"><i class="fa-solid fa-clock-rotate-left"></i> Recent Files</h2>
-        <button onclick="loadHistory()" class="text-sm text-blue-400 hover:text-blue-300"><i class="fa-solid fa-rotate"></i> Refresh</button>
+        <h2 class="text-xl font-bold text-slate-200"><i class="fa-solid fa-list"></i> History List</h2>
+        <button onclick="loadHistory()" class="text-sm text-blue-400 hover:text-white transition"><i class="fa-solid fa-rotate"></i> Refresh</button>
       </div>
       
-      <div id="historyList" class="space-y-4">
-        <div class="text-center text-slate-500 py-10">Loading history...</div>
+      <!-- Scrollable History Container (Max height set) -->
+      <div id="historyContainer" class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-inner max-h-[600px] overflow-y-auto">
+        <div id="historyList" class="divide-y divide-slate-700">
+          <div class="text-center text-slate-500 py-10">Loading history...</div>
+        </div>
       </div>
 
       <script>
+        // Copy function
+        function copyText(text) {
+          navigator.clipboard.writeText(text);
+          // Simple Toast notification
+          const toast = document.createElement('div');
+          toast.className = 'fixed bottom-5 right-5 bg-green-600 text-white px-4 py-2 rounded shadow-lg text-sm z-50';
+          toast.innerText = 'Copied to clipboard! ✅';
+          document.body.appendChild(toast);
+          setTimeout(() => toast.remove(), 2000);
+        }
+
+        async function deleteHistory(ts) {
+          if(!confirm("Are you sure you want to remove this from history? (File stays on R2)")) return;
+          await fetch('/api/history/' + ts, { method: 'DELETE' });
+          loadHistory();
+        }
+
         async function loadHistory() {
           const res = await fetch('/api/history');
           const data = await res.json();
           const list = document.getElementById('historyList');
           list.innerHTML = '';
           
-          if(data.length === 0) { list.innerHTML = '<div class="text-center text-slate-600">No files uploaded yet.</div>'; return; }
+          if(data.length === 0) { list.innerHTML = '<div class="text-center text-slate-500 py-8">No files found.</div>'; return; }
 
           data.forEach(item => {
-            // Encode the URL for the download proxy
-            const downloadUrl = '/api/force-download?url=' + encodeURIComponent(item.url) + '&name=' + encodeURIComponent(item.filename);
+            // This is the download link wrapper
+            const host = window.location.origin;
+            const downloadLink = \`\${host}/api/force-download?url=\${encodeURIComponent(item.url)}&name=\${encodeURIComponent(item.filename)}\`;
 
             list.innerHTML += \`
-              <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md flex flex-col md:flex-row gap-6">
+              <div class="p-4 hover:bg-slate-750 transition flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 group">
                 
-                <!-- Left: Info & Actions -->
-                <div class="flex-1 flex flex-col justify-between">
-                  <div>
-                    <h3 class="font-bold text-lg text-white mb-1 break-all line-clamp-2">\${item.filename}</h3>
-                    <p class="text-xs text-slate-400 mb-4">\${new Date(item.ts).toLocaleString()}</p>
-                  </div>
-
-                  <!-- Two Main Buttons -->
-                  <div class="flex flex-wrap gap-3 mt-2">
-                    <!-- Stream / Copy Link -->
-                    <div class="flex rounded-md shadow-sm" role="group">
-                      <a href="\${item.url}" target="_blank" class="btn bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-4 py-2 rounded-l-md border-r border-emerald-800 flex items-center gap-2">
-                         <i class="fa-solid fa-play"></i> Watch
-                      </a>
-                      <button onclick="copyToClip('\${item.url}')" class="btn bg-emerald-600 hover:bg-emerald-700 text-white text-sm px-3 py-2 rounded-r-md" title="Copy Stream Link">
-                        <i class="fa-regular fa-copy"></i>
-                      </button>
-                    </div>
-
-                    <!-- Auto Download Link -->
-                    <a href="\${downloadUrl}" class="btn bg-sky-600 hover:bg-sky-700 text-white text-sm px-4 py-2 rounded-md flex items-center gap-2 shadow-sm">
-                      <i class="fa-solid fa-download"></i> Download
-                    </a>
-                  </div>
+                <div class="flex-1 min-w-0">
+                  <h3 class="font-bold text-white text-sm truncate mb-1" title="\${item.filename}">\${item.filename}</h3>
+                  <p class="text-xs text-slate-500">\${new Date(item.ts).toLocaleString()}</p>
                 </div>
 
-                <!-- Right: Mini Player Preview -->
-                <div class="md:w-64 bg-black rounded-lg overflow-hidden shrink-0 border border-slate-600 relative group">
-                   <video controls preload="metadata" class="w-full h-full object-cover">
-                      <source src="\${item.url}" type="video/mp4">
-                   </video>
+                <div class="flex flex-wrap gap-2 w-full sm:w-auto">
+                  
+                  <!-- Stream Link Copy -->
+                  <button onclick="copyText('\${item.url}')" class="bg-slate-700 hover:bg-blue-600 text-slate-200 text-xs px-3 py-2 rounded border border-slate-600 flex items-center gap-2 transition">
+                    <i class="fa-regular fa-copy"></i> Stream
+                  </button>
+
+                  <!-- Download Link Copy -->
+                  <button onclick="copyText('\${downloadLink}')" class="bg-slate-700 hover:bg-green-600 text-slate-200 text-xs px-3 py-2 rounded border border-slate-600 flex items-center gap-2 transition">
+                    <i class="fa-solid fa-download"></i> DL Link
+                  </button>
+                  
+                  <!-- Delete History Button -->
+                  <button onclick="deleteHistory(\${item.ts})" class="bg-slate-700 hover:bg-red-600 text-slate-400 hover:text-white text-xs px-3 py-2 rounded border border-slate-600 transition ml-auto sm:ml-0" title="Remove from list">
+                    <i class="fa-solid fa-trash"></i>
+                  </button>
                 </div>
+
               </div>
             \`;
           });
         }
 
-        function copyToClip(text) {
-          navigator.clipboard.writeText(text);
-          alert("Stream Link Copied!");
-        }
-
         async function startUpload() {
           const url = document.getElementById('urlInput').value;
-          if(!url) return alert("Please enter a link");
+          const customName = document.getElementById('nameInput').value; // Get custom name
+
+          if(!url) return alert("Link is required!");
 
           const statusArea = document.getElementById('statusArea');
           const progressBar = document.getElementById('progressBar');
@@ -143,7 +167,7 @@ app.get("/", (c) => {
           const percentText = document.getElementById('percentText');
           
           statusArea.classList.remove('hidden');
-          statusText.innerText = "Initializing...";
+          statusText.innerText = "Processing...";
           progressBar.style.width = '0%';
           percentText.innerText = '0%';
 
@@ -151,7 +175,7 @@ app.get("/", (c) => {
             const startRes = await fetch('/api/upload', {
               method: 'POST',
               headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({ url })
+              body: JSON.stringify({ url, customName }) // Send custom name
             });
             const { jobId } = await startRes.json();
 
@@ -163,26 +187,28 @@ app.get("/", (c) => {
                 const pct = Math.round((pollData.loaded / pollData.total) * 100) || 0;
                 progressBar.style.width = pct + '%';
                 percentText.innerText = pct + '%';
-                statusText.innerText = \`Uploading... (\${(pollData.loaded/1024/1024).toFixed(1)} MB)\`;
+                statusText.innerText = \`Uploading... \${(pollData.loaded/1024/1024).toFixed(1)} MB\`;
               } else if (pollData.status === 'completed') {
                 clearInterval(interval);
                 progressBar.style.width = '100%';
                 percentText.innerText = '100%';
-                statusText.innerText = "Done!";
+                statusText.innerText = "Success!";
                 setTimeout(() => {
                    statusArea.classList.add('hidden');
                    loadHistory();
+                   // Clear inputs
+                   document.getElementById('urlInput').value = '';
+                   document.getElementById('nameInput').value = '';
                 }, 1000);
               } else if (pollData.status === 'failed') {
                 clearInterval(interval);
-                progressBar.classList.remove('from-blue-500', 'to-purple-500');
                 progressBar.classList.add('bg-red-600');
                 statusText.innerText = "Error: " + pollData.error;
               }
             }, 1000);
 
           } catch (e) {
-            alert("Error: " + e.message);
+            alert("System Error: " + e.message);
           }
         }
 
@@ -194,19 +220,25 @@ app.get("/", (c) => {
   return c.html(html);
 });
 
-// --- API: Start Upload ---
+// --- API: Upload ---
 app.post("/api/upload", async (c) => {
-  const { url } = await c.req.json();
+  const { url, customName } = await c.req.json();
   const jobId = crypto.randomUUID();
-  // Clean filename
-  let filename = url.split('/').pop().split('?')[0];
-  if (!filename.endsWith('.mp4')) filename += '.mp4';
+
+  // Rename Logic
+  let filename;
+  if (customName && customName.trim() !== "") {
+    filename = customName.trim();
+    if (!filename.endsWith('.mp4')) filename += '.mp4';
+  } else {
+    // Default name from URL
+    filename = url.split('/').pop().split('?')[0];
+    if (!filename.endsWith('.mp4')) filename += '.mp4';
+  }
 
   await kv.set(["jobs", jobId], { status: "processing", loaded: 0, total: 0 });
   
-  // Start background upload
   runUploadTask(jobId, url, filename).catch(err => {
-    console.error(err);
     kv.set(["jobs", jobId], { status: "failed", error: err.message });
   });
 
@@ -216,14 +248,13 @@ app.post("/api/upload", async (c) => {
 async function runUploadTask(jobId: string, url: string, filename: string) {
   try {
     const sourceRes = await fetch(url);
-    if (!sourceRes.ok) throw new Error("Source fetch failed");
     const totalSize = Number(sourceRes.headers.get("content-length")) || 0;
     
     let loaded = 0;
     const transformStream = new TransformStream({
       transform(chunk, controller) {
         loaded += chunk.length;
-        // Update status every ~2MB
+        // Update status periodically
         if (loaded % (1024 * 1024 * 2) < chunk.length || loaded === totalSize) {
              kv.set(["jobs", jobId], { status: "processing", loaded, total: totalSize });
         }
@@ -243,44 +274,67 @@ async function runUploadTask(jobId: string, url: string, filename: string) {
 
     await upload.done();
     const r2Url = `${PUBLIC_DOMAIN}/${filename}`;
+    
+    // Save to History
+    const ts = Date.now();
     await kv.set(["jobs", jobId], { status: "completed", url: r2Url });
-    await kv.set(["history", Date.now()], { filename, url: r2Url, ts: Date.now() });
+    await kv.set(["history", ts], { filename, url: r2Url, ts: ts });
+    
   } catch (err) {
     await kv.set(["jobs", jobId], { status: "failed", error: err.message });
   }
 }
 
-// --- API: Status & History ---
+// --- API: Status, History List, Delete History ---
 app.get("/api/status/:id", async (c) => {
   const result = await kv.get(["jobs", c.req.param("id")]);
-  return c.json(result.value || { status: "unknown" });
+  return c.json(result.value || {});
 });
 
 app.get("/api/history", async (c) => {
-  const entries = kv.list({ prefix: ["history"] }, { limit: 20, reverse: true });
+  const entries = kv.list({ prefix: ["history"] }, { limit: 50, reverse: true });
   const history = [];
   for await (const entry of entries) history.push(entry.value);
   return c.json(history);
 });
 
-// --- API: Force Download Proxy ---
-// This endpoint proxies the R2 file and adds "Content-Disposition: attachment"
+// New Endpoint: Delete History Item (KV only)
+app.delete("/api/history/:ts", async (c) => {
+  const ts = Number(c.req.param("ts"));
+  await kv.delete(["history", ts]);
+  return c.json({ success: true });
+});
+
+// --- API: Smart Download (Bandwidth Saver) ---
+// Redirects directly to R2 Signed URL (VPN bypass via custom domain)
 app.get("/api/force-download", async (c) => {
   const fileUrl = c.req.query("url");
   const fileName = c.req.query("name") || "video.mp4";
 
   if (!fileUrl) return c.text("URL required", 400);
 
-  // Fetch the file from R2
-  const response = await fetch(fileUrl);
-  
-  // Create a new response that pipes the body but forces download headers
-  return new Response(response.body, {
-    headers: {
-      "Content-Type": response.headers.get("Content-Type") || "video/mp4",
-      "Content-Disposition": `attachment; filename="${fileName}"`, // This forces the browser to download
-    },
+  // Extract Key from URL
+  const objectKey = fileUrl.split('/').pop();
+
+  const command = new GetObjectCommand({
+    Bucket: BUCKET_NAME,
+    Key: objectKey,
+    ResponseContentDisposition: `attachment; filename="${fileName}"`,
   });
+
+  // Generate Signed URL (valid for 1 hour)
+  let signedUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
+
+  // Replace with Custom Domain if available
+  if (PUBLIC_DOMAIN) {
+    try {
+      const myDomain = new URL(PUBLIC_DOMAIN).origin; 
+      const urlObj = new URL(signedUrl);
+      signedUrl = `${myDomain}${urlObj.pathname}${urlObj.search}`;
+    } catch (e) { console.error(e); }
+  }
+
+  return c.redirect(signedUrl);
 });
 
 Deno.serve(app.fetch);
