@@ -6,6 +6,7 @@
     "hono": "https://deno.land/x/hono@v3.11.7/mod.ts",
     "hono/": "https://deno.land/x/hono@v3.11.7/",
     "@aws-sdk/client-s3": "npm:@aws-sdk/client-s3",
-    "@aws-sdk/lib-storage": "npm:@aws-sdk/lib-storage"
+    "@aws-sdk/lib-storage": "npm:@aws-sdk/lib-storage",
+    "@aws-sdk/s3-request-presigner": "npm:@aws-sdk/s3-request-presigner"
   }
 }
